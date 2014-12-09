@@ -10,7 +10,8 @@ of RC channel required.
 Written using mikroBasic PRO for PIC
 
 The code has good comments throughout so you should be able to work out what
-is going on at all times.
+is going on at all times. In fact, its probably fair to say its more a PIC
+Controller tutorial than project code.
 
 Breadboard example of project can be seen on YouTube here:
 https://www.youtube.com/watch?v=7cM7Or5Pfu0
