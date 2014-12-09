@@ -1,0 +1,72 @@
+[DEVICE]
+Name=P12F683
+Clock=4000000
+[MEMORY_MODEL]
+Value=-1
+[BUILD_TYPE]
+Value=0
+[ACTIVE_TAB]
+Value=Huey 450.mbas
+[USE_EEPROM]
+Value=0
+[USE_HEAP]
+Value=0
+[HEAP_SIZE]
+Value=2000
+[EEPROM_DEFINITION]
+Value=
+[FILES]
+Count=1
+File0=Huey 450.mbas
+[BINARIES]
+Count=0
+[IMAGES]
+Count=0
+ActiveImageIndex=-1
+[OPENED_FILES]
+Count=1
+File0=Huey 450.mbas
+[EEPROM]
+Count=0
+[ACTIVE_COMMENTS_FILES]
+Count=0
+[OTHER_FILES]
+Count=0
+[SEARCH_PATH]
+Count=3
+Path0=C:\Users\Public\Documents\Mikroelektronika\mikroBasic PRO for PIC\defs\
+Path1=C:\Users\Public\Documents\Mikroelektronika\mikroBasic PRO for PIC\Uses\P16\
+Path2=C:\Users\Public\Documents\Mikroelektronika\Projects\Huey 450 Nav Lights\
+[HEADER_PATH]
+Count=0
+[HEADERS]
+Count=0
+[PLDS]
+Count=0
+[Useses]
+Count=21
+File0=ADC
+File1=Button
+File2=Conversions
+File3=C_Stdlib
+File4=C_Type
+File5=EEPROM
+File6=Lcd
+File7=Lcd_Constants
+File8=Manchester
+File9=MemManager
+File10=One_Wire
+File11=PS2
+File12=PWM
+File13=Software_I2C
+File14=Software_SPI
+File15=Software_UART
+File16=Sound
+File17=String
+File18=Time
+File19=Trigon
+File20=Trigonometry
+[EXPANDED NODES]
+Node1=Sources
+Node2=Output Files
+Count=2

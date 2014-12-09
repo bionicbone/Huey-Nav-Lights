@@ -1,0 +1,528 @@
+program Huey_450
+'*****************************************************************************
+' Program: LED Controller for HU-1B 450 RC Helicopter
+' Date:                   May 2012
+' Developer:              Kevin Guest (The BionicBone)
+' Version:                v1
+' Status                  Test           -    Dev, Build, Test, Production
+' Dev Environment:        MikroBasic Pro for PIC v5.6.1
+' MCU:                    PIC 12F683
+' OSC:                    INTOSCIO
+' FRQ:                    4 MHz (internal)
+' WDT, PUT, MCLR          Disabled
+' BOD, IES, FSC           Enabled
+'*****************************************************************************
+' Program Details:
+' This program will run the lights for the Huey 450 along with
+' supplying the correct amount of Gain to the Tail Gyro.
+' There is a number of safety warnings also built in:-
+' Low Battery during flight = Nav Lights stop flashing
+' Battery not fully charged on first connection = Slow Flashing (30 seconds)
+' Battery critically discharged on first connection = Fast Flashing (perminant)
+' In Head Hold Mode the normal navigation sequence is:-
+' White Tail LED, bit 5.    Sequence: .-.-..-- Just repeated
+' Becon Top LED, bit 2.     Sequence: -.-.-... Repeated 3 times then ----....
+' In Rate Mode the normal navigation sequence is:-
+' White Tail LED, bit 5.    Sequence: .-.-..-- Just repeated
+' Becon Top LED, bit 2.     Sequence: -.-.-... Just repeated
+' Sequence Keys:     - = LED on for 100ms
+'                    . = LED off for 100ms
+' The Gyro Gain output can be set by altering the code line
+' SYMBOL SetGyroGain = xxx to the value required from 0% to 100%
+' Low voltage ref can be set by altering the code line
+' SYMBOL LowVoltageRef = xxx to the value of the mA on Pin5 at the given voltage
+'    Change this to give the usual references, 9v 9.1v 9.2v and 9.3v
+'*****************************************************************************
+' Circuit Design Details:
+' 12F683 Pins
+' Pin1 = Power from UBEC (Max 6.0v)
+' Pin2 = Gyro Gain
+' Pin3 = Tail LED circuit
+' Pin4 = RX Channel signal pin (use in line 4K7 if in circuit prog is required)
+' Pin5 = Ref Voltage from 12v Line, (+12v - 20K - RefToPin5 - 12K - Ground)
+' Pin6 = Red Becon LED circuit
+' Pin7 = Search Light (activated by RX Channel)
+' Pin8 = Ground / Negative
+'*****************************************************************************
+'
+' Declarations section
+ Symbol SetGyroGain = 80        'Set to Gain Value to Tail Gyro Function
+                                '0 - 50 (1 - 1.5ms) for Rate Mode
+                                '50 - 100 (1.5 - 2ms) for Head Hold Mode
+ 
+ Symbol ProgramVersion = 2      'Version control, will be displayed on power up
+                                'after first initial long LED pulse.
+ 
+ Symbol LowVoltageRef = 340     '@ approx 340mV on Pin5
+                                'Tested @ 9.35 Volts
+                                
+ Symbol LowVoltPowerUpRef = 445 '@ approx 445mV on Pin5 on Power Up.
+                                'Tested @ 12.20 volts
+                                
+ Symbol CriticalVoltPowerUpRef = 430 '@ approx 430mv on Pin5 - recovered battery
+                                     'Tested @ 11.70 Volts
+                                    
+ Dim LowVoltageHold as Bit      '0 = OK, 1 = Low Triggered
+ Dim LowVoltageCount as Byte    'Used to count low volt readings before activ
+ Dim LowVoltageDisplayed as Bit '0 = OK, 1 = Displayed so can reset.
+ Dim LowVoltPowerUp as Bit      '0 = OK, 1 = Low Volt Power Up Trigger
+ Dim CriticalVoltPowerUp as Bit '0 = OK, 1 = Critical Low Volt Power Up.
+ Dim MainBatteryDetected as Bit '0 = Not Detected, 1 = Detected.
+ Dim i as Char                  'Temp For/Next Variable + others
+ Dim adData as word             'Used to reading in data from Pin5 (volt ref)
+ Dim Gain as Byte               'Used in Gyro Gain Calculation
+ Dim Smoother as Byte           'Intial time Delay for Gyro Gain Pulse
+ Dim Delay as Integer           'Additional time Delay for Gyro Gain Pulse
+ Dim DelayCounter as Integer    'USed by Gyro Gain Pulse
+ Dim RxSwitch as Bit            '0 = Low, 1 = High
+ Dim RxSwitchCounter as Byte    'Checks for good low reads in a row.
+ Dim CriticalProcess as byte    'Interupt controller for switch changing.
+
+ Sub Procedure Interrupt()      'Called every 20ms by TMR0
+      CriticalProcess = 1       'Set the indicator to 1, this will overwrite the
+                                'value of the flag set by any other process.
+                                'That will signal that this interupt routine
+                                'interupted that current critical process.
+      GPIO.B5 = 1               'Make Pin5 go high, start of servo pulse.
+
+      if Smoother = 0 then      'Choose the best initial delay
+         Delay_us(900)          'to ensure the servo is as close to
+      End if                    'the correct end position as possible.
+      if Smoother = 1 then      'The reason the first position is
+           Delay_us(1170)       '900us and not 1000us is that these
+      End if                    'instruction will take some time to
+      if Smoother = 2 then      'execute themselves. This needs to be
+           Delay_us(1440)       'accounted for.
+      end if                    'We have 5 significant steps in the program,
+      if Smoother = 3 then      '0%  25%  50%  75%  100%
+           Delay_us(1710)       'So, 32% would be 25% + a 7% for next Delay.
+      end if
+      if Smoother = 4 then
+           Delay_us(1980)
+      end if
+
+      'OK, the main Delay has been completed, now add the extra bit.
+      for DelayCounter  = 1 to Delay
+           'Do nothing but the for next count,
+           'at 2 us per instruction this will extend the delay
+      Next DelayCounter
+
+      GPIO.B5 = 0               'The pulse is over, drop the signal
+      CriticalProcess = 0       'Reset the indicator back to Zero.
+      TMR0 = 178                'Reset the Timer (19.968 ms until next call)
+      INTCON = %10100000        'Reset the Flags and restart the
+                                'interrupt service again.
+ End Sub
+
+ Sub Procedure PulseCounter(dim byref Port as byte, dim PortBit as Byte)
+  dim tmp as word                         'Temporary variable
+  tmp  = 0                                'Clear temporary variable
+  'Start the reading of the RX Channel.
+  'Consider that an interupt to keep the tail gyro signal correct could pull us
+  'away and that would alter the number of counts we get during the high pulse.
+  'This in turn could cause us to have a low count and decide the switch
+  'is off. We need to make sure we count the readings, if we get 3 readings
+  'the same then change the status, otherwise stay on current setting.
+  while TestBit(Port, PortBit) = 0        'Wait for falling edge of pulse
+  wend                                    'If no pulses the program will stop
+                                          'at this point.
+  CriticalProcess = 2                     'Set the critical process indicator
+  while TestBit(Port, PortBit) = 1        'Wait for falling edge
+  Inc(tmp)                                'Count the number of times I get to
+  wend                                    'test the port before the low signal.
+  If CriticalProcess <> 2 then            'Interupt must have occured during
+    Exit                                  'the reading, thus the count will be
+  End If                                  'incorrect, leave LED as is.
+                                          'Although this is not 100% reliable
+  CriticalProcess = 0                     'so we use a low counter also.
+  
+  
+  if tmp <29 then                         'Low signal detected
+      if RxSwitchCounter < 3 then         'Must have 4 low signals in a row
+         inc(RxSwitchCounter)             'to take into account the Interrupt.
+      Else
+          RxSwitchCounter = 0
+          RxSwitch = 0                    'less than 29 is a good low signal.
+      End If
+   end if
+   if tmp >=29 then                       'Dont worry about the Interrupt for a
+       RxSwitch = 1                       'high signal, not possible situation.
+       RxSwitchCounter = 0                'Greater than 29 is a good High signal.
+   end if
+ end sub
+
+
+ ' This procedure is not required for the operation of this program, as such
+ ' the MikroBASIC Pro compiler is intelligent enough not to compile it.
+ ' It has been left in as it forms part of my "Useful Debug Functions" suite.
+ Sub Procedure DisplayValueLED(Dim P1 as Word, Dim ByRef OutputPort1 as
+               byte, Dim OutputBit1 as Byte)
+ ' This procedure will do two things:-
+ ' Using the code line DisplayValueLED(999,GPIO,0) will causes the LED on GP0
+ ' to flash on and off repeatedly 60 times (about 3 seconds), this is useful if
+ ' you need to check if a particular piece of code is executing and when it 
+ ' actually executes.
+ ' Also, DisplayValueLED(xxxx, GPIO, 1) where xxxx is a numeric value or 
+ ' variable will cause the LED on GP1 to flash in a sequence to allow you to
+ ' see what the value is.
+ ' For example DisplayValueLED(435, GPIO, 1) would start with a long flash to
+ ' identify the sequence is starting with 1000's, followed by a quick pulse to
+ ' indicate there are no 1000's. The another long pulse moves us on to 100's,
+ ' followed by 4 shorter pulses to count us to 400. Another Long pluse moves
+ ' us to 10's etc.
+    Dim Temp as Word
+    If P1 = 999 then   'Just flash LEDs, program executed the call instruction.
+       For i = 1 to 60
+           SetBit(OutputPort1,OutputBit1)
+           Delay_ms(25)
+           ClearBit(OutputPort1,OutputBit1)
+           Delay_ms(25)
+       Next i
+    else                       'Display Count of Param P1
+       temp = P1 / 1000
+          SetBit(OutputPort1,OutputBit1)
+          Delay_ms(3000)       'Pulse for start of 1000's indicator
+          ClearBit(OutputPort1,OutputBit1)
+          Delay_ms(250)
+       If temp > 0 then             'Count the 1000's
+          'Count the 1000's
+          for i = 1 to temp
+             SetBit(OutputPort1,OutputBit1)
+             Delay_ms(250)
+             ClearBit(OutputPort1,OutputBit1)
+             Delay_ms(250)
+          Next i
+          Delay_ms(750)
+       Else                          'No 1000's
+             SetBit(OutputPort1,OutputBit1)
+             Delay_ms(75)
+             ClearBit(OutputPort1,OutputBit1)
+             Delay_ms(1000)
+       End if
+       P1 = P1 - (temp * 1000)
+       temp = P1 / 100
+          SetBit(OutputPort1,OutputBit1)          'GP1 to go high.
+          Delay_ms(1000)       'Pulse for start of 100's indicator
+          ClearBit(OutputPort1,OutputBit1)
+          Delay_ms(250)
+       If temp > 0 then             'Count the 100's
+          'Count the 1000's
+          for i = 1 to temp
+             SetBit(OutputPort1,OutputBit1)
+             Delay_ms(250)
+             ClearBit(OutputPort1,OutputBit1)
+             Delay_ms(250)
+          Next i
+          Delay_ms(750)
+       Else                          'No 100's
+             SetBit(OutputPort1,OutputBit1)
+             Delay_ms(75)
+             ClearBit(OutputPort1,OutputBit1)
+             Delay_ms(1000)
+       End if
+       P1 = P1 - (temp * 100)
+       temp = P1 / 10
+          SetBit(OutputPort1,OutputBit1)
+          Delay_ms(1000)       'Pulse for start of 10's indicator
+          ClearBit(OutputPort1,OutputBit1)
+          Delay_ms(250)
+       If temp > 0 then             'Count the 10's
+          'Count the 1000's
+          for i = 1 to temp
+             SetBit(OutputPort1,OutputBit1)
+             Delay_ms(250)
+             ClearBit(OutputPort1,OutputBit1)
+             Delay_ms(250)
+          Next i
+          Delay_ms(750)
+       Else                          'No 10's
+             SetBit(OutputPort1,OutputBit1)
+             Delay_ms(75)
+             ClearBit(OutputPort1,OutputBit1)
+             Delay_ms(1000)
+       End if
+       P1 = P1 - (temp * 10)
+       temp = P1
+          SetBit(OutputPort1,OutputBit1)
+          Delay_ms(1000)       'Pulse for start of 1's indicator
+          ClearBit(OutputPort1,OutputBit1)
+          Delay_ms(250)
+       If temp > 0 then             'Count the 1's
+          'Count the 1000's
+          for i = 1 to temp
+             SetBit(OutputPort1,OutputBit1)
+             Delay_ms(250)
+             ClearBit(OutputPort1,OutputBit1)
+             Delay_ms(250)
+          Next i
+          Delay_ms(750)
+       Else                          'No 1's
+             SetBit(OutputPort1,OutputBit1)
+             Delay_ms(75)
+             ClearBit(OutputPort1,OutputBit1)
+             Delay_ms(1000)
+       End if
+    End if
+ End Sub
+
+
+sub procedure LEDS(Dim P1 as Byte)
+       ' First, lets check the voltage in the LiPo battery
+       ' If it is above the preset voltage then we want to allow the LEDs
+       ' to flash in their correct sequence. Otherwise we want to just
+       ' hold them on to warn the pilot that they should land.
+       adData = ADC_Get_Sample(2)
+       ' This little calculation makes the reading on Pin5 to approximately
+       ' the same as the mV present on the pin. This way it is easier to
+       ' set the LowVoltageRef symbol to the correct value.
+       adData = adData * 0.5
+       ' Add a bit of calibration at the mid point.
+       adData = adData - 15
+
+       'If there is no battery connected the calulation above will result
+       'in a figure of 65521 (65536-15)
+       'So this can be used to detect if the main battery has been connected
+       If adData < 65000 then
+          MainBatteryDetected = 1
+       End If
+
+       ' Now check it against the LowVoltageRef point to see if we need to
+       ' hold the Navigation lights on.
+       if adData < LowVoltageRef then
+          'The voltage is lower than the value set so
+          'set the flag to say the Low Voltage Warning should be activated
+          'on the next cycle round.
+          LowVoltageCount = LowVoltageCount + 1
+          If LowVoltageCount > 4 then       '12v ref has been low for the
+             LowVoltageHold = 1             'last 5 LED changes.
+             LowVoltageCount = 0            'Tell the main prog to stop the
+          End if                            'LEDs flashing to warn the pilot.
+       Else
+         LowVoltageCount = 0            '12v reference is good, reset counter.
+         If LowVoltageDisplayed = 1 then    'If the warning has been display
+           LowVoltageHold = 0               'then switch it off if the vlotage
+           LowVoltageDisplayed = 0          'is OK again.
+         end if
+       End If
+       
+       if adData < LowVoltPowerUpRef then   'Check the initial power up voltage
+           LowVoltPowerUp = 1               'Battery not fully changed
+       End if
+
+       if adData < CriticalVoltPowerUpRef then 'Check the init power up voltage
+          CriticalVoltPowerUp = 1              'Battery at critical discharge
+       End if
+
+       'Does the Search Lite need to be switched on?
+       PulseCounter(GPIO,3)
+       if RxSwitch = 0 then
+           GPIO.B0 = 0
+       else
+           GPIO.B0 = 1
+       End if
+
+       'Set the new LED settings
+       'Review bits 1 and 4 of the param P1
+       'If they are 1 then light the LED for the General Purpose I/O port
+       'else switch it off.
+       if (P1 >> 1) AND 1 = 1 then           'Repeat for all posible Bits
+          GPIO.B1 = 1
+       else
+          GPIO.B1 = 0
+       end if
+
+       if (P1 >> 4) AND 1 = 1 then
+          GPIO.B4 = 1
+       else
+          GPIO.B4 = 0
+       end if
+       ' Now just pause awhile before we alter the LEDs again.
+       Delay_ms(75)
+End Sub
+
+
+main:
+'   Main program 
+     OPTION_REG = %10000111     'GPIO pull ups are disabled and
+                                'the Prescaler is set to 1:256
+                                'Changed from 1:16 (%10000100)
+
+     'Set this to the Gain setting you want
+     Gain = SetGyroGain         '0 to 100% based on Symbol setting at the top
+
+     'Best just check you've not made a typo or your servo / model
+     'could be history.
+     If Gain < 0 then           'Gain should never be < 0
+        Gain = 0
+     End if
+     If Gain > 100 then         'Gain should never be > 100
+        Gain = 100
+     End if
+
+     'Set up the Smoother and Delay for the required Gain Setting
+     'Basically trying to do a for / next loop for longer than
+     '250us causes the servo to react strangely. The Smoother
+     'ensures the first part of the Delay is done by a Delay_us()
+     'follow by a shorter for next loop for the last part.
+     Smoother = Gain / 25
+     Delay = (((Gain * 100) / 25) - (Smoother * 100)) / 9.5
+
+ ANSEL  = %01010100          'Set AN2 as analogue and others digital
+                             'Bits 4-6 set AD Conversion Frequency as Fosc/16
+                             'since we are on 4 Mhz that is 4.0us sample time.
+ TRISIO = %00000100          'Set GP2 as Input, others as Outputs
+ CMCON0 = %00000111          'Configure CIN pins as I/O & COUT pin as I/O
+                             'I'm going to need all the I/O i can get here!!
+ TMR0 = 178                  'Start the timer, 19.968 ms before each call.
+                             '(4 / 4,000,000)*256*(256-178)
+                             '(4 / Fxt)*Prescaler*(256-TMR0 initvalue)
+                             ' = 0.019968 seconds
+ INTCON = %10100000          'Reset the Flags and start the interrupt service.
+ 
+ LowVoltPowerUp = 0          'Reset all voltage warnings for the first pass.
+ CriticalVoltPowerUp = 0
+ LowVoltageDisplayed = 0
+
+ 
+ 'Initialise the internal ADC module to sync with the internal MCU clock.
+ 'The ADC module will be used to read the Vref (through step down circuit)
+ 'from the LiPo source.
+ ADC_init()
+
+ 'We may need to wait for the the pilot to connect the 12 volt main battery
+ 'Just keep cycling round until the connection is detected.
+ Delay_ms(1000)
+ MainBatteryDetected = 0
+ While MainBatteryDetected = 0
+   LEDS(%00000000)
+ Wend
+ 
+ 'Run the LED power up sequence, first all LEDs on for 3 seconds, followed by
+ 'a pluse for each version number for the program version.
+ 'NOTE: as this calls the LED procedure is also takes a voltage refernce
+ '      reading for the next part.
+ LEDS(%00010011)
+ Delay_ms(3000)
+ LEDS(%00000000)             'Enter into the loop with the LEDs off
+ For i = 1 to ProgramVersion 'Flash the LEDs once for each version.
+     Delay_ms(75)
+     LEDS(%00010011)
+     Delay_ms(75)
+     LEDS(%00000000)
+ Next i
+ Delay_ms(500)
+
+ 'We need to review the main battery status.
+ 'During the call of LEDS() above the +12v ref is checked. If the main battery
+ 'that has been connected is at a critical voltage level then the
+ 'CriticalVoltPowerUp flag is set.
+ if CriticalVoltPowerUp = 1 then
+     While True                   'Pulse the LEDS fast forever to warn
+         LEDS(%00010011)          'the pilot.
+         Delay_ms(10)
+         LEDS(%00000000)          'The interupt service will still hold the
+         Delay_ms(10)             'tail gyro if the pilot ignores the warning.
+     Wend
+ End if
+
+ 'If the 12v reference was less than a fully changed battery
+ 'then we want to flash the LEDs slowly on and off for a good
+ '30 seconds to tell the pilot that he needs to check the main battery.
+ if LowVoltPowerUp = 1 then
+     For i = 1 to 30
+         LEDS(%00010011)
+         Delay_ms(500)
+         LEDS(%00000000)
+         Delay_ms(500)
+     Next i
+ End if
+
+ 'Initialise our Low Voltage flags again for good measure.
+ LowVoltageHold = 0
+ LowVoltageCount = 0
+ RxSwitch = 0
+
+ 'Now lets execute the main program, which is repeated forever.
+ While True
+   'First lets check the RX Switch so we can activate the Search Light
+   'during the LEDS procedure if the switch is on.
+'   PulseCounter(GPIO,3)          'RX Channel is connected to GP3 (pin 4)
+   
+   ' Check to see if the Low Voltage setting has been reached.
+   If LowVoltageHold = 1 then
+        'Low Voltage, turn on the LEDs.
+        LEDS(%00010010)
+        'Create a delay, if the battery quickly recovers we dont want the
+        'LEDs plusing quickly off and on.
+        Delay_ms(10000)      '10 Seconds
+        LEDS(%00010010)      'Call LEDS again, only to recheck the
+                             '12 Volt feed, if still low then
+                             'LowViltageHold will return back as still 1.
+        LowVoltageDisplayed = 1
+     Else
+      'Voltage OK, so lets run the LED sequence.
+      ' Head Hold Mode
+      ' White Tail LED, bit 5.Sequence: ...-.-.- Just repeated
+      ' Becon Top LED, bit 2. Sequence: -.-.-... Repeated 3 times then ----....
+      '
+      ' Rate Mode
+      ' White Tail LED, bit 5.Sequence: ...-.-.- Just repeated
+      ' Becon Top LED, bit 2. Sequence: -.-.-... Just repeated
+      '
+      ' Phase 1, repeat 3 times
+        For i=0 to 2
+               'Recheck the RX Switch
+ '              PulseCounter(GPIO,3)    'RX Channel is connected to GP3 (pin 4)
+        ' Flash Becon 3 times and pause
+        ' Tail just has the same sequence anyway
+        '                Becon 12F683 - Pin 6
+        '                  |
+        '              Tail 12F683 - Pin 3
+        '               |
+               LEDS(%00000010)
+               LEDS(%00000000)
+               LEDS(%00000010)
+               LEDS(%00010000)
+               LEDS(%00000010)
+               LEDS(%00010000)
+               LEDS(%00000000)
+               LEDS(%00010000)
+        Next i
+      If Smoother > 1 then      'Gyro in Head Held Mode
+               'Recheck the RX Switch
+  '             PulseCounter(GPIO,3)    'RX Channel is connected to GP3 (pin 4)
+          ' Hold becon on and then pause before the repeat
+          ' Tail just has the same sequence anyway
+          '                Becon 12F683 - Pin 6
+          '                  |
+          '              Tail 12F683 - Pin 3
+          '               |
+                 LEDS(%00000010)
+                 LEDS(%00000010)
+                 LEDS(%00000010)
+                 LEDS(%00010010)
+                 LEDS(%00000000)
+                 LEDS(%00010000)
+                 LEDS(%00000000)
+                 LEDS(%00010000)
+      Else                      'Gyro in Rate Mode so keep flashing the becon
+               'Recheck the RX Switch
+'               PulseCounter(GPIO,3)    'RX Channel is connected to GP3 (pin 4)
+          ' Flash Becon 3 times and pause
+          ' Tail just has the same sequence anyway
+          '                Becon 12F683 - Pin 6
+          '                  |
+          '              Tail 12F683 - Pin 3
+          '               |
+                 LEDS(%00000010)
+                 LEDS(%00000000)
+                 LEDS(%00000010)
+                 LEDS(%00010000)
+                 LEDS(%00000010)
+                 LEDS(%00010000)
+                 LEDS(%00000000)
+                 LEDS(%00010000)
+      End if
+    end if
+   Wend
+end.
