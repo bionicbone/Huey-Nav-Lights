@@ -13,6 +13,9 @@ The code has good comments throughout so you should be able to work out what
 is going on at all times. In fact, its probably fair to say its more a PIC
 Controller tutorial than project code.
 
+For those without "mikroBasic PRO for PIC" installed the key file is: Huey 450.mbas
+which can be viewed with any text editor.
+
 Breadboard example of project can be seen on YouTube here:
 https://www.youtube.com/watch?v=7cM7Or5Pfu0
 
